@@ -71,9 +71,9 @@ public class EmailController {
         return emailAnalyzerService.analyzeEmail(email.getSubject(), email.getBody());
     }
 
-    @GetMapping("/ground-truth/")
-    public Boolean importGroundTruth() throws IOException {
-       return organizationalDataImporter.importData("src/main/resources/metadir/employees.json");
+    @GetMapping("/ground-truth/{file}")
+    public Boolean importGroundTruth(String file) throws IOException {
+       return organizationalDataImporter.importData(file);
 
     }
 
