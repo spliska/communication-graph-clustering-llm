@@ -3,18 +3,28 @@ package pliska.communicationgraphclusteringbackend.api;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.*;
+import pliska.communicationgraphclusteringbackend.ai.openai.EmailAnalysisResult;
+import pliska.communicationgraphclusteringbackend.ai.openai.EmailAnalyzerService;
 import pliska.communicationgraphclusteringbackend.db.email.EmailEntity;
 import pliska.communicationgraphclusteringbackend.db.email.EmailRepository;
+import pliska.communicationgraphclusteringbackend.loader.metadata.OrganizationalDataImporter;
+
+import java.io.IOException;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/emails")
 public class EmailController {
     private final EmailImportService importService;
     private final EmailRepository emailRepository;
+    private final EmailAnalyzerService emailAnalyzerService;
+    private final OrganizationalDataImporter organizationalDataImporter;
 
-    public EmailController(EmailImportService importService, EmailRepository emailRepository) {
+    public EmailController(EmailImportService importService, EmailRepository emailRepository, EmailAnalyzerService emailAnalyzerService, OrganizationalDataImporter organizationalDataImporter) {
         this.importService = importService;
         this.emailRepository = emailRepository;
+        this.emailAnalyzerService = emailAnalyzerService;
+        this.organizationalDataImporter = organizationalDataImporter;
     }
 
     @PostMapping("/import")
@@ -39,6 +49,32 @@ public class EmailController {
     public EmailEntity getOne(@PathVariable Long id) {
         return emailRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Email not found: " + id));
+    }
+
+    @GetMapping("/analyze")
+    public int analyzeEmail(){
+        List<EmailEntity> emails=emailRepository.findAll();
+        emailAnalyzerService.analyzeEmailInBatchAndSaveResult(emails);
+        return 1;
+    }
+
+    @GetMapping("/analyze/by-user/{emailAddress}")
+    public Boolean analyzeEmailsOfUser(String emailAddress){
+        List<EmailEntity> emails = emailRepository.findAllBySender(emailAddress);
+        return emailAnalyzerService.analyzeEmailInBatchAndSaveResult(emails);
+
+    }
+
+    @GetMapping("/analyze/{id}")
+    public EmailAnalysisResult analyzeSpecificEmail(@PathVariable Long id){
+        EmailEntity email=emailRepository.getEmailEntityById(id);
+        return emailAnalyzerService.analyzeEmail(email.getSubject(), email.getBody());
+    }
+
+    @GetMapping("/ground-truth/")
+    public Boolean importGroundTruth() throws IOException {
+       return organizationalDataImporter.importData("src/main/resources/metadir/employees.json");
+
     }
 
 
