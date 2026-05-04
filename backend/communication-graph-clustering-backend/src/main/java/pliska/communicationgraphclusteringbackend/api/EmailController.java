@@ -72,7 +72,7 @@ public class EmailController {
     }
 
     @GetMapping("/ground-truth/{file}")
-    public Boolean importGroundTruth(String file) throws IOException {
+    public Boolean importGroundTruth(@PathVariable String file) throws IOException {
        return organizationalDataImporter.importData(file);
 
     }
