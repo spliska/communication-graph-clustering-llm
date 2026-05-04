@@ -397,10 +397,10 @@ public class GraphGenerationService {
 
     private HashMap<String, Double>  getLlmWeights(){
         HashMap<String, Double> llmWeights=new HashMap<>();
-        llmWeights.put("personal", 1.0);
-        llmWeights.put("topic", 1.0);
+        llmWeights.put("personal", 2.0);
+        llmWeights.put("topic", 2.0);
         llmWeights.put("sentiments", 1.0);
-        llmWeights.put("interactions", 1.0);
+        llmWeights.put("interactions", 3.0);
         return llmWeights;
     }
 
@@ -412,7 +412,7 @@ public class GraphGenerationService {
             case LOG_WEIGHT:
                 return WeightCalculator.logWeight(interactions);
             case LOG_XMAX_WEIGHT_LLM:
-                return WeightCalculator.logXmaxWeightLLM(interactions,0,0,0,0,0);
+                return WeightCalculator.logXmaxWeightLLM(getLlmWeights(),llmService.calculateLlmValues(sourceNode.getPerson().getEmail(),targetNode.getPerson().getEmail()),interactions,maxInteractions);
             case LOG_WEIGHT_LLM:
                 return WeightCalculator.logWeightLlm(getLlmWeights(),llmService.calculateLlmValues(sourceNode.getPerson().getEmail(),targetNode.getPerson().getEmail()),interactions);
             default:
