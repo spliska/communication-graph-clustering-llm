@@ -1,21 +1,22 @@
 package pliska.communicationgraphclusteringbackend.loader.email;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import pliska.communicationgraphclusteringbackend.db.email.EmailEntity;
 import pliska.communicationgraphclusteringbackend.db.email.EmailRepository;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.OffsetDateTime;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
+import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
 
 @Component
 public class EmailImporter {
+
+    private static final Logger logger = LoggerFactory.getLogger(EmailImporter.class);
 
     private final EmailRepository emailRepository;
 
@@ -23,148 +24,160 @@ public class EmailImporter {
         this.emailRepository = emailRepository;
     }
 
-    public List<EmailEntity> readAllEmailsFromFolder(Path folderPath) {
-        List<EmailEntity> emailEntityList = new ArrayList<EmailEntity>();
-        try (Stream<Path> pathsStream = Files.walk(folderPath)) {
-            pathsStream.filter(Files::isRegularFile).forEach(
-                    path -> {
-                        try{
-                            EmailEntity emailEntity= null;
-                            try {
-                                emailEntity = parseFile(path);
-                            } catch (IOException e) {
-                                throw new RuntimeException(e);
-                            }
-                            if (emailEntity !=null) emailEntityList.add(emailEntity);
+    public List<EmailEntity> readEmailsFromFolderWithLimit(Path folderPath, int limit) {
+        List<EmailEntity> emailEntities = new ArrayList<>();
+        Queue<Path> directoriesToVisit = new LinkedList<>();
+        directoriesToVisit.add(folderPath);
 
-                        } catch (RuntimeException e) {
-                            throw new RuntimeException(e);
+        while (!directoriesToVisit.isEmpty() && emailEntities.size() < limit) {
+            Path currentDir = directoriesToVisit.poll();
+            try (Stream<Path> files = Files.list(currentDir)) {
+                files.forEach(file -> {
+                    if (Files.isDirectory(file)) {
+                        directoriesToVisit.add(file);
+                    } else if (isNotHiddenFile(file)) {
+                        try {
+                            if (emailEntities.size() < limit) {
+                                EmailEntity emailEntity = parseFile(file);
+                                if (emailEntity != null) {
+                                    emailEntities.add(emailEntity);
+                                }
+                            }
+                        } catch (Exception e) {
+                            logger.error("Failed to process file: {}. Reason: {}", file, e.getMessage(), e);
                         }
                     }
-            );
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+                });
+            } catch (IOException e) {
+                logger.error("Failed to list files in directory: {}. Reason: {}", currentDir, e.getMessage(), e);
+            }
         }
-        return emailEntityList;
+
+        return emailEntities;
     }
 
-    public List<EmailEntity> readEmailsFromFolderWithLimit(Path folderPath,int limit) {
-        List<EmailEntity> emailEntityList = new ArrayList<EmailEntity>();
-        try (Stream<Path> pathsStream = Files.walk(folderPath)) {
-            pathsStream.filter(Files::isRegularFile)
-                    .limit(limit)
-                    .forEach(
-                    path -> {
-                        try{
-                            EmailEntity emailEntity= null;
-                            try {
-                                emailEntity = parseFile(path);
-                            } catch (IOException e) {
-                                throw new RuntimeException(e);
-                            }
-                            if (emailEntity !=null) emailEntityList.add(emailEntity);
+    public List<EmailEntity> readAllEmailsFromFolder(Path folderPath) {
+        List<EmailEntity> emailEntities = new ArrayList<>();
+        Queue<Path> directoriesToVisit = new LinkedList<>();
+        directoriesToVisit.add(folderPath);
 
-                        } catch (RuntimeException e) {
-                            throw new RuntimeException(e);
+        while (!directoriesToVisit.isEmpty()) {
+            Path currentDir = directoriesToVisit.poll();
+            try (Stream<Path> files = Files.list(currentDir)) {
+                files.forEach(file -> {
+                    if (Files.isDirectory(file)) {
+                        directoriesToVisit.add(file);
+                    } else if (isNotHiddenFile(file)) {
+                        try {
+                            EmailEntity emailEntity = parseFile(file);
+                            if (emailEntity != null) {
+                                emailEntities.add(emailEntity);
+                            }
+                        } catch (Exception e) {
+                            logger.error("Failed to process file: {}. Reason: {}", file, e.getMessage(), e);
                         }
                     }
-            );
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+                });
+            } catch (IOException e) {
+                logger.error("Failed to list files in directory: {}. Reason: {}", currentDir, e.getMessage(), e);
+            }
         }
-        return emailEntityList;
+
+        return emailEntities;
+    }
+
+    private boolean isNotHiddenFile(Path file) {
+        try {
+            return !Files.isHidden(file) && !file.getFileName().toString().startsWith(".");
+        } catch (IOException e) {
+            logger.warn("Failed to check if file is hidden: {}. Skipping.", file, e);
+            return false;
+        }
     }
 
     public EmailEntity parseFile(Path file) throws IOException {
-        String raw = Files.readString(file, StandardCharsets.UTF_8);
+        try {
+            String rawContent = Files.readString(file, StandardCharsets.UTF_8);
 
-        int sep = findHeaderBodySeparator(raw);
-        String headerPart = (sep >= 0) ? raw.substring(0, sep) : raw;
-        String bodyPart = (sep >= 0) ? raw.substring(sep).replaceFirst("^\\R+", "") : "";
+            int separator = findHeaderBodySeparator(rawContent);
+            if (separator < 0) {
+                throw new RuntimeException("Invalid email format: No header-body separator found.");
+            }
 
-        Map<String, String> headers = parseHeaders(headerPart);
+            String headerPart = rawContent.substring(0, separator);
+            String bodyPart = rawContent.substring(separator + 1);
 
-        EmailEntity e = new EmailEntity();
-        e.setSourcePath(file.toString());
-        e.setRawHeaders(headerPart);
-        e.setBody(bodyPart);
+            Charset charset = detectCharset(headerPart);
+            if (!charset.equals(StandardCharsets.UTF_8)) {
+                rawContent = Files.readString(file, charset);
 
-        e.setMessageId(get(headers, "Message-ID"));
-        e.setFrom(get(headers, "From"));
-        e.setToEmailAddress(get(headers, "To"));
-        e.setCc(get(headers, "Cc"));
-        e.setBcc(get(headers, "Bcc"));
-        e.setSubject(get(headers, "Subject"));
-        e.setMimeVersion(get(headers, "Mime-Version"));
-        e.setContentType(get(headers, "Content-Type"));
-        e.setContentTransferEncoding(get(headers, "Content-Transfer-Encoding"));
+                headerPart = rawContent.substring(0, separator);
+                bodyPart = rawContent.substring(separator + 1);
+            }
 
-        e.setxFrom(get(headers, "X-From"));
-        e.setxTo(get(headers, "X-To"));
-        e.setxCc(get(headers, "X-cc"));
-        e.setxBcc(get(headers, "X-bcc"));
-        e.setxFolder(get(headers, "X-Folder"));
-        e.setxOrigin(get(headers, "X-Origin"));
-        e.setxFileName(get(headers, "X-FileName"));
+            Map<String, String> headers = parseHeaders(headerPart);
 
-        e.setDate(parseDate(get(headers, "Date")));
-
-        return e;
+            return buildEmailEntity(headers, bodyPart, file);
+        } catch (Exception e) {
+            logger.error("Error while parsing email file: {}. Reason: {}", file, e.getMessage(), e);
+            throw e;
+        }
     }
 
-    private int findHeaderBodySeparator(String raw) {
-        int i = raw.indexOf("\r\n\r\n");
-        if (i >= 0) return i + 4;
-        i = raw.indexOf("\n\n");
-        if (i >= 0) return i + 2;
-        return -1;
+    private Charset detectCharset(String rawHeaderPart) {
+        Map<String, String> headers = parseHeaders(rawHeaderPart);
+        String contentType = headers.getOrDefault("Content-Type", "").toLowerCase();
+
+        if (contentType.contains("charset=")) {
+            try {
+                String charset = contentType.split("charset=")[1].split(";")[0].trim().replaceAll("[\"']", "");
+                logger.debug("Detected charset: {}", charset);
+                return Charset.forName(charset);
+            } catch (Exception e) {
+                logger.warn("Invalid charset in Content-Type. Defaulting to UTF-8: {}", contentType);
+            }
+        }
+        return StandardCharsets.UTF_8;
     }
 
     private Map<String, String> parseHeaders(String headerPart) {
-        List<String> unfolded = new ArrayList<>();
-        String[] lines = headerPart.split("\\R", -1);
+        Map<String, String> headers = new HashMap<>();
+        String[] lines = headerPart.split("\r\n");
 
-        StringBuilder current = new StringBuilder();
         for (String line : lines) {
-            if (line.isEmpty()) continue;
-
-            boolean isContinuation = line.startsWith(" ") || line.startsWith("\t");
-            if (isContinuation && current.length() > 0) {
-                current.append(" ").append(line.trim());
-            } else {
-                if (current.length() > 0) unfolded.add(current.toString());
-                current.setLength(0);
-                current.append(line);
+            int separatorIndex = line.indexOf(':');
+            if (separatorIndex > 0) {
+                String key = line.substring(0, separatorIndex).trim();
+                String value = line.substring(separatorIndex + 1).trim();
+                headers.put(key, value);
             }
         }
-        if (current.length() > 0) unfolded.add(current.toString());
+        return headers;
+    }
 
-        Map<String, String> map = new HashMap<>();
-        for (String l : unfolded) {
-            int idx = l.indexOf(':');
-            if (idx <= 0) continue;
-            String key = l.substring(0, idx).trim();
-            String val = l.substring(idx + 1).trim();
-            map.put(key, val);
+    private int findHeaderBodySeparator(String raw) {
+        return raw.indexOf("\r\n\r\n");
+    }
+
+    private EmailEntity buildEmailEntity(Map<String, String> headers, String body, Path file) {
+        EmailEntity emailEntity = new EmailEntity();
+
+        emailEntity.setMessageId(get(headers, "Message-ID"));
+        emailEntity.setFrom(get(headers, "From"));
+        emailEntity.setToEmailAddress(get(headers, "To"));
+        emailEntity.setSubject(get(headers, "Subject"));
+
+        if (emailEntity.getMessageId() == null) {
+            logger.warn("Skipping file {}: Missing 'Message-ID' header.", file);
+            return null;
         }
-        return map;
+
+        emailEntity.setBody(body);
+
+        return emailEntity;
     }
 
     private String get(Map<String, String> headers, String key) {
         return headers.getOrDefault(key, null);
-    }
-
-    private OffsetDateTime parseDate(String rawDate) {
-        if (rawDate == null || rawDate.isBlank()) return null;
-
-        String cleaned = rawDate.replaceAll("\\s*\\(.*\\)$", "").trim();
-
-        try {
-
-            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("EEE, d MMM yyyy HH:mm:ss Z", Locale.ENGLISH);
-            return ZonedDateTime.parse(cleaned, fmt).toOffsetDateTime();
-        } catch (Exception ignored) { }
-
-        return null;
     }
 }
